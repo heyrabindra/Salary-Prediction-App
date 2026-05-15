@@ -1,67 +1,108 @@
+# =========================
+# IMPORT LIBRARIES
+# =========================
 import streamlit as st
 import pickle
 import pandas as pd
-import sqlite3
-import hashlib
 
-# ---------------- DATABASE ----------------
-conn = sqlite3.connect("users.db", check_same_thread=False)
-c = conn.cursor()
+# =========================
+# LOAD FILES
+# =========================
+model = pickle.load(open("knn_model.pkl", "rb"))
+scaler = pickle.load(open("scaler.pkl", "rb"))
+columns = pickle.load(open("columns.pkl", "rb"))
 
-c.execute('CREATE TABLE IF NOT EXISTS users(username TEXT, password TEXT)')
-conn.commit()
+# =========================
+# HELPER: EXTRACT OPTIONS FROM TRAINED COLUMNS
+# =========================
+def get_options(prefix):
+    opts = [col.replace(prefix, "") for col in columns if col.startswith(prefix)]
+    opts = sorted(list(set(opts)))
+    return opts
 
-def make_hash(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+# Extract all possible options
+job_options = get_options("job_title_")
+edu_options = get_options("education_level_")
+loc_options = get_options("location_")
+ind_options = get_options("industry_")
+company_options = get_options("company_size_")
+remote_options = get_options("remote_work_")
 
-def add_user(username, password):
-    c.execute("INSERT INTO users VALUES (?, ?)", (username, make_hash(password)))
-    conn.commit()
+# Add baseline category (lost due to drop_first=True)
+job_options = ["Other"] + job_options
+edu_options = ["Other"] + edu_options
+loc_options = ["Other"] + loc_options
+ind_options = ["Other"] + ind_options
+company_options = ["Other"] + company_options
+remote_options = ["Other"] + remote_options
 
-def login_user(username, password):
-    c.execute("SELECT * FROM users WHERE username=? AND password=?",
-              (username, make_hash(password)))
-    return c.fetchone()
+# =========================
+# TITLE
+# =========================
+st.title("💼 Salary Prediction App (KNN Improved)")
 
-# ---------------- LOGIN/SIGNUP ----------------
-menu = ["Login", "Sign Up"]
-choice = st.sidebar.selectbox("Menu", menu)
+# =========================
+# USER INPUT
+# =========================
+exp = st.number_input("Experience (years)", 0, 30)
+skills = st.number_input("Skills Count", 0, 50)
+cert = st.number_input("Certifications", 0, 20)
 
-if choice == "Sign Up":
-    st.title("Create Account")
+job = st.selectbox("Job Role", job_options)
+edu = st.selectbox("Education", edu_options)
+loc = st.selectbox("Location", loc_options)
+ind = st.selectbox("Industry", ind_options)
+company = st.selectbox("Company Size", company_options)
+remote = st.selectbox("Remote Work", remote_options)
 
-    new_user = st.text_input("Username")
-    new_pass = st.text_input("Password", type="password")
+# =========================
+# CREATE INPUT
+# =========================
+input_dict = {
+    "experience_years": exp,
+    "skills_count": skills,
+    "certifications": cert,
+    "job_title": job,
+    "education_level": edu,
+    "location": loc,
+    "industry": ind,
+    "company_size": company,
+    "remote_work": remote
+}
 
-    if st.button("Sign Up"):
-        add_user(new_user, new_pass)
-        st.success("Account Created! Go to Login")
+input_df = pd.DataFrame([input_dict])
 
-elif choice == "Login":
-    st.title("Login")
+# =========================
+# FEATURE ENGINEERING
+# =========================
+input_df['exp_squared'] = input_df['experience_years'] ** 2
+input_df['skill_per_exp'] = input_df['skills_count'] / (input_df['experience_years'] + 1)
+input_df['cert_per_skill'] = input_df['certifications'] / (input_df['skills_count'] + 1)
 
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+input_df['seniority'] = pd.cut(
+    input_df['experience_years'],
+    bins=[0, 2, 5, 10, 20],
+    labels=['Fresher', 'Junior', 'Mid', 'Senior']
+)
 
-    if st.button("Login"):
+# =========================
+# DUMMIES + ALIGN
+# =========================
+input_df = pd.get_dummies(input_df)
+input_df = input_df.reindex(columns=columns, fill_value=0)
 
-        if login_user(username, password):
+# =========================
+# SCALE
+# =========================
+num_cols = ['experience_years', 'skills_count', 'certifications',
+            'exp_squared', 'skill_per_exp', 'cert_per_skill']
 
-            st.success("Login Successful!")
+input_df[num_cols] = scaler.transform(input_df[num_cols])
 
-            # LOAD MODEL
-            model = pickle.load(open("knn_model.pkl", "rb"))
-            scaler = pickle.load(open("scaler.pkl", "rb"))
-            columns = pickle.load(open("columns.pkl", "rb"))
-
-            st.title("💼 Salary Prediction App")
-
-            exp = st.number_input("Experience", 0, 30)
-            skills = st.number_input("Skills Count", 0, 50)
-            cert = st.number_input("Certifications", 0, 20)
-
-            if st.button("Predict Salary"):
-                st.success("Prediction works here")
-
-        else:
-            st.error("Wrong Username or Password")
+# =========================
+# PREDICTION
+# =========================
+if st.button("Predict Salary"):
+    prediction = model.predict(input_df)
+    st.success(f"💰 Predicted Salary: {int(prediction[0])}")
+    st.balloons()
